@@ -1,79 +1,123 @@
 const TOTEM_COORDS = [
-  { x: 10, y: -60, z: 10 },
-  { x: -10, y: -60, z: 10 },
-  { x: 0, y: -60, z: 10 },
+  { x: 10, y: -59, z: 10 },
+  { x: -10, y: -59, z: 10 },
+  { x: 0, y: -59, z: 10 },
 ];
 
-// 1. Команда запуска
+// Улучшенный эффект появления
+function spawnImpressiveEffect(level, x, y, z) {
+  // 1. Звук появления
+  level.server.runCommandSilent(
+    `playsound minecraft:block.beacon.activate master @a ${x} ${y} ${z} 1.0 1.0`,
+  );
+
+  // 2. Вертикальный луч из end_rod (эффект призыва)
+  for (let i = 0; i < 15; i++) {
+    level.server.runCommandSilent(
+      `particle minecraft:end_rod ${x} ${y + i * 0.1} ${z} 0 0 0 0.05 1`,
+    );
+  }
+
+  // 3. Магические искры (enchant)
+  for (let i = 0; i < 40; i++) {
+    let offsetX = (Math.random() - 0.5) * 1.5;
+    let offsetY = (Math.random() - 0.5) * 1.5;
+    let offsetZ = (Math.random() - 0.5) * 1.5;
+    level.server.runCommandSilent(
+      `particle minecraft:enchant ${x + offsetX} ${y + offsetY} ${z + offsetZ} 0 0 0 0.1 1`,
+    );
+  }
+}
+
 ServerEvents.commandRegistry((event) => {
-  const { commands: Commands } = event;
   event.register(
-    Commands.literal("startevent")
+    event.commands
+      .literal("event1-berier")
       .requires((src) => src.hasPermission(2))
       .executes((ctx) => {
-        let server = ctx.source.server;
         let level = ctx.source.level;
 
-        server.persistentData.totemsClicked = 0;
-        server.persistentData.totalTotems = TOTEM_COORDS.length;
+        // Очистка старых объектов
+        level
+          .getEntities()
+          .filter((e) => e.tags.contains("event_totem"))
+          .forEach((e) => e.kill());
+        level
+          .getEntities()
+          .filter((e) => e.tags.contains("totem_visual"))
+          .forEach((e) => e.kill());
 
         TOTEM_COORDS.forEach((coord) => {
-          let lightning = level.createEntity("minecraft:lightning_bolt");
-          lightning.setPosition(coord.x, coord.y, coord.z);
-          lightning.spawn();
+          let bx = Math.floor(coord.x);
+          let by = Math.floor(coord.y - 1);
+          let bz = Math.floor(coord.z);
 
-          // ВИЗУАЛ (оставляем маленьким, без хитбокса)
+          // 1. Ставим обсидиан через команду (надежный способ)
+          level.server.runCommandSilent(
+            `setblock ${bx} ${by} ${bz} minecraft:obsidian`,
+          );
+
+          // 2. Запускаем новый магический эффект
+          spawnImpressiveEffect(level, coord.x, coord.y, coord.z);
+
+          // 3. Визуальный тотем
           let visual = level.createEntity("minecraft:armor_stand");
-          visual.setPosition(coord.x, coord.y, coord.z);
+          visual.setPosition(coord.x, coord.y - 0.9, coord.z);
+          visual.tags.add("totem_visual");
           visual.mergeNbt(
-            `{Marker:1b, Invisible:1b, NoGravity:1b, Small:1b, Tags:["totem_visual"], ArmorItems:[{},{},{},{id:"minecraft:totem_of_undying",Count:1b}]}`,
+            `{Marker:1b, Invisible:1b, NoGravity:1b, Small:1b, ArmorItems:[{},{},{},{id:"minecraft:totem_of_undying",count:1}]}`,
           );
           visual.spawn();
 
-          // ХИТБОКС (Убрали Small:1b, теперь он 2 блока в высоту и ловит любые клики)
-          // Добавили Invulnerable:1b, чтобы он не ломался от 1 удара
+          // 4. Хитбокс
           let hitbox = level.createEntity("minecraft:armor_stand");
-          hitbox.setPosition(coord.x, coord.y, coord.z);
-          hitbox.mergeNbt(
-            `{Invisible:1b, NoGravity:1b, Invulnerable:1b, Tags:["event_totem"]}`,
-          );
+          hitbox.setPosition(coord.x, coord.y - 0.9, coord.z);
+          hitbox.tags.add("event_totem");
+          hitbox.mergeNbt(`{Invisible:1b, NoGravity:1b, Invulnerable:1b}`);
           hitbox.spawn();
         });
 
-        ctx.source.sendSuccess("Ивент начался! Тотемы появились.", true);
+        ctx.source.player.tell("Ивент запущен! Тотемы призваны.");
         return 1;
       }),
   );
 });
 
-// 2. Общая логика активации (чтобы не писать код дважды для ЛКМ и ПКМ)
-function activateTotem(target, player, server, level) {
-  target.removeTag("event_totem");
-  target.kill(); // Сразу удаляем хитбокс
+// ДАТЧИК ПРИБЛИЖЕНИЯ
+PlayerEvents.tick((event) => {
+  if (event.level.time % 20 != 0) return;
 
-  let visualTotem = null;
-  let box = target.getBoundingBox().inflate(1.0);
-  let entities = level.getEntitiesWithin(box);
+  let player = event.player;
+  let nearby = event.level.getEntitiesWithin(
+    player.getBoundingBox().inflate(2.0),
+  );
 
-  // Ищем наш визуал
-  for (let e of entities) {
-    if (e.type === "minecraft:armor_stand" && e.tags.contains("totem_visual")) {
-      visualTotem = e;
-      break;
+  nearby.forEach((entity) => {
+    if (entity.tags.contains("event_totem")) {
+      activateTotem(event.level, entity);
     }
-  }
+  });
+});
+
+function activateTotem(level, target) {
+  let server = level.server;
+
+  // Эффекты при активации
+  server.runCommandSilent(
+    `particle minecraft:flame ${target.x} ${target.y + 1} ${target.z} 0.5 0.5 0.5 0.05 50`,
+  );
+  server.runCommandSilent(
+    `playsound minecraft:entity.enderman.teleport ambient @a ${target.x} ${target.y} ${target.z} 1.0 0.5`,
+  );
+
+  let visualTotem = level
+    .getEntitiesWithin(target.getBoundingBox().inflate(1.0))
+    .find((e) => e.tags.contains("totem_visual"));
 
   if (visualTotem) {
     visualTotem.removeTag("totem_visual");
 
-    server.runCommandSilent(
-      `playsound minecraft:entity.lightning_bolt.thunder ambient @a ${visualTotem.x} ${visualTotem.y} ${visualTotem.z} 1.0 1.0`,
-    );
-    server.runCommandSilent(
-      `particle minecraft:flame ${visualTotem.x} ${visualTotem.y + 1} ${visualTotem.z} 0.5 0.5 0.5 0.05 50`,
-    );
-
-    // Плавный взлет
+    // Анимация вращения + взлета
     for (let i = 0; i <= 20; i++) {
       server.scheduleInTicks(i, (ctx) => {
         visualTotem.setPosition(
@@ -81,73 +125,49 @@ function activateTotem(target, player, server, level) {
           visualTotem.y + 0.15,
           visualTotem.z,
         );
+        visualTotem.setRotation(visualTotem.rotation + 45, 0);
       });
     }
 
-    // Удаление с дымком
+    // Финальный взрыв частиц
     server.scheduleInTicks(20, (ctx) => {
       server.runCommandSilent(
-        `particle minecraft:poof ${visualTotem.x} ${visualTotem.y + 1} ${visualTotem.z} 0.5 0.5 0.5 0.05 20`,
+        `particle minecraft:large_smoke ${visualTotem.x} ${visualTotem.y} ${visualTotem.z} 0.2 0.2 0.2 0.1 20`,
+      );
+      server.runCommandSilent(
+        `particle minecraft:poof ${visualTotem.x} ${visualTotem.y} ${visualTotem.z} 0.2 0.2 0.2 0.1 20`,
       );
       visualTotem.kill();
     });
   }
 
-  // Логика барьера
-  let clicked = (server.persistentData.totemsClicked || 0) + 1;
-  server.persistentData.totemsClicked = clicked;
-  let total = server.persistentData.totalTotems || TOTEM_COORDS.length;
+  target.kill();
 
-  player.tell(`§eАктивировано тотемов: ${clicked}/${total}`);
+  // Динамический подсчет
+  let remaining = level
+    .getEntities()
+    .filter((e) => e.tags.contains("event_totem")).length;
 
-  if (clicked >= total) {
+  if (remaining <= 0) {
+    // --- ЭПИЧНЫЙ ФИНАЛ ---
     server.runCommandSilent("worldborder set 2500 10");
+
+    // 1. Мощный взрывной звук на всю карту (громкость 10.0)
+    server.runCommandSilent(
+      "playsound minecraft:entity.generic.explode master @a ~ ~ ~ 10.0 0.5",
+    );
+
+    // 2. Дополнительный "гул" для эффекта вибрации
+    server.runCommandSilent(
+      "playsound minecraft:entity.wither.spawn master @a ~ ~ ~ 5.0 0.5",
+    );
+
     server.runCommandSilent(
       'title @a title {"text":"Барьер расширен!","color":"gold"}',
     );
-    let soundX = visualTotem ? visualTotem.x : target.x;
+  } else {
     server.runCommandSilent(
-      `playsound minecraft:ui.toast.challenge_complete master @a ${soundX} ${target.y} ${target.z} 1.0 1.0`,
+      `title @a actionbar {"text":"Тотем активирован! Осталось: ${remaining}","color":"green"}`,
     );
   }
 }
-
-// 3. Обработка ПКМ (Правая кнопка мыши - взаимодействие)
-ItemEvents.entityInteracted((event) => {
-  let target = event.getTarget();
-  if (
-    target.type === "minecraft:armor_stand" &&
-    target.tags.contains("event_totem")
-  ) {
-    event.cancel();
-    activateTotem(
-      target,
-      event.getEntity(),
-      event.getServer(),
-      event.getLevel(),
-    );
-  }
-});
-
-// 4. Обработка ЛКМ (Левая кнопка мыши - удар)
-EntityEvents.hurt((event) => {
-  let target = event.getEntity();
-  // Проверяем, что ударили именно по нашему хитбоксу
-  if (
-    target.type === "minecraft:armor_stand" &&
-    target.tags.contains("event_totem")
-  ) {
-    event.cancel(); // Отменяем стандартный урон
-
-    let source = event.getSource();
-    if (source.getPlayer()) {
-      // Проверяем, что ударил именно игрок
-      activateTotem(
-        target,
-        source.getPlayer(),
-        event.getServer(),
-        event.getLevel(),
-      );
-    }
-  }
-});
